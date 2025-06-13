@@ -19,16 +19,16 @@ async function fetchNewsFromAPI(date: Date): Promise<RawNewsArticle[]> {
 
   const newsapi = new NewsAPI(apiKey);
   const formattedDate = format(date, 'yyyy-MM-dd');
-  console.log(`Fetching news from NewsAPI for date: ${formattedDate}`);
+  console.log(`Fetching news from NewsAPI for date: ${formattedDate} with query 'Andhra Pradesh'`);
 
   try {
     const response = await newsapi.v2.everything({
-      q: 'India',
+      q: 'Andhra Pradesh',
       language: 'en',
       from: formattedDate,
       to: formattedDate,
       sortBy: 'popularity',
-      pageSize: 50,
+      pageSize: 100, 
     });
 
     if (response.status !== 'ok') {
@@ -37,7 +37,7 @@ async function fetchNewsFromAPI(date: Date): Promise<RawNewsArticle[]> {
     }
     
     if (!response.articles || response.articles.length === 0) {
-        console.log(`NewsAPI returned no articles for ${formattedDate}. Query: 'India', sortBy: 'popularity'. This could be due to the date being too old (free tier limits to ~1 month) or no matching news.`);
+        console.log(`NewsAPI returned no articles for ${formattedDate}. Query: 'Andhra Pradesh', sortBy: 'popularity'. This could be due to the date being too old (free tier limits to ~1 month) or no matching news.`);
         return [];
     }
 
@@ -45,18 +45,20 @@ async function fetchNewsFromAPI(date: Date): Promise<RawNewsArticle[]> {
 
     const mappedArticles = response.articles.map((article: NewsApiArticle, index: number): RawNewsArticle => {
       let content = article.content || article.description || '';
+      // Handle "[Removed]" content, fallback to description if content is "[Removed]"
       if (content === '[Removed]') {
         content = article.description || ''; 
       }
       
+      // Further ensure content is a string and remove common API truncation markers
       if (typeof content === 'string') {
         content = content.replace(/\[\+\d+\s*chars\]$/, '').trim();
       } else {
-        content = ''; 
+        content = ''; // Ensure content is always a string
       }
 
       return {
-        id: article.url || `news-article-${index}-${new Date(article.publishedAt || Date.now()).getTime()}`,
+        id: article.url || `news-article-${index}-${new Date(article.publishedAt || Date.now()).getTime()}`, // Ensure unique ID
         title: article.title || 'No Title Provided',
         content: content,
         source: article.source?.name || 'Unknown Source',
@@ -65,12 +67,14 @@ async function fetchNewsFromAPI(date: Date): Promise<RawNewsArticle[]> {
       };
     });
 
+    // Filter out articles that still have no meaningful title or content after mapping
     const filteredArticles = mappedArticles.filter(a => a.title && a.title !== '[Removed]' && a.content && a.content.trim() !== '');
     console.log(`Returning ${filteredArticles.length} articles for ${formattedDate} after client-side filtering (title/content checks).`);
     return filteredArticles;
 
   } catch (error: any) {
     console.error(`Failed to fetch or process news from NewsAPI for ${formattedDate}:`, error.message || error);
+    // Log more detailed error information if available
     if (error.message) {
         console.error('Error details:', error.message, error);
     } else {
@@ -118,7 +122,8 @@ export async function fetchAndProcessNews(date: Date): Promise<NewsDigestData> {
           relevanceReason: relevanceResult.isRelevant ? relevanceResult.reason : undefined,
           summary: summaryResult?.summary,
         } as ProcessedNewsArticle;
-      } catch (error) {
+      } catch (error)
+       {
         console.error(`Error during AI processing for article ${article.id} ("${article.title}"):`, error);
         return {
           ...article,
@@ -136,10 +141,10 @@ export async function fetchAndProcessNews(date: Date): Promise<NewsDigestData> {
 
     // Input for common news detection should be based on raw articles with sufficient content
     const commonNewsInput: DetectCommonNewsInput = rawArticles
-      .filter(a => a.content && a.content.length >= 50) 
+      .filter(a => a.content && a.content.length >= 50) // Ensure only articles with substantial content are used for common news detection.
       .map(a => ({
         title: a.title,
-        content: a.content, 
+        content: a.content, // Make sure to pass the actual content for better detection
         source: a.source,
       }));
 
@@ -151,22 +156,25 @@ export async function fetchAndProcessNews(date: Date): Promise<NewsDigestData> {
             console.log(`fetchAndProcessNews: Detected ${commonNewsOutput.length} common headline groups.`);
         } catch (error) {
             console.error('Error detecting common news:', error);
-            commonNewsOutput = []; 
+            commonNewsOutput = []; // Default to empty array on error
         }
     } else {
         console.log("fetchAndProcessNews: No articles with sufficient content for common news detection.");
     }
     
 
+    // Map AI output to UI structure
     const uiCommonHeadlines: UICommonHeadline[] = commonNewsOutput.map(group => {
+      // Ensure that the articles in the group are mapped correctly to include their URL
       const detailedArticles: CommonNewsSubArticle[] = group.articles.map(articleInfo => {
+        // Find the original article to get its URL and ensure correct mapping
         const originalArticle = rawArticles.find(
           ra => ra.title === articleInfo.title && ra.source === articleInfo.source // Ensure content is also checked if titles can be non-unique for same source
         );
         return {
           title: articleInfo.title,
           source: articleInfo.source,
-          url: originalArticle?.url || '#',
+          url: originalArticle?.url || '#', // Fallback URL if not found
         };
       });
 
@@ -176,6 +184,7 @@ export async function fetchAndProcessNews(date: Date): Promise<NewsDigestData> {
       };
     });
 
+    // Categorize relevant articles by source
     const categorizedMap: Record<string, ProcessedNewsArticle[]> = relevantArticles.reduce((acc, article) => {
       const source = article.source;
       if (!acc[source]) {
@@ -199,10 +208,9 @@ export async function fetchAndProcessNews(date: Date): Promise<NewsDigestData> {
 
   } catch (error) {
     console.error("Overall error in fetchAndProcessNews:", error);
-    return {
+    return { // Return empty structure on error
       commonHeadlines: [],
       categorizedNews: [],
     };
   }
 }
-
