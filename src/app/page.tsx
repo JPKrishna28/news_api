@@ -1,3 +1,4 @@
+
 'use client';
 
 import * as React from 'react';
@@ -26,8 +27,10 @@ export default function HomePage() {
 
     setIsLoading(true);
     setNewsData(null); // Clear previous data
+    console.log('[HomePage] Calling fetchAndProcessNews with date:', dateToFetch);
     try {
       const data = await fetchAndProcessNews(dateToFetch);
+      console.log('[HomePage] Received data from fetchAndProcessNews:', data);
       setNewsData(data);
       if (data.commonHeadlines.length === 0 && data.categorizedNews.length === 0) {
         toast({
@@ -37,7 +40,7 @@ export default function HomePage() {
         });
       }
     } catch (error) {
-      console.error('Failed to fetch news:', error);
+      console.error('[HomePage] Failed to fetch news:', error);
       toast({
         title: "Error Fetching News",
         description: "An error occurred while fetching news. Please try again.",
@@ -51,9 +54,18 @@ export default function HomePage() {
   
   React.useEffect(() => {
     // Initial fetch for today's date
-    handleFetchNews(new Date());
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []); // Run only on mount
+    console.log('[HomePage] Initial fetch useEffect triggered.');
+    if (selectedDate) { // Ensure selectedDate is defined before initial fetch
+        handleFetchNews(selectedDate);
+    }
+  }, [handleFetchNews, selectedDate]); // Added handleFetchNews and selectedDate
+
+  const onDateChangeAndFetch = (date: Date | undefined) => {
+    setSelectedDate(date);
+    // No automatic fetch on date change from selector here, user clicks button
+    // If you want automatic fetch on date change, uncomment the line below
+    // handleFetchNews(date); 
+  };
 
   return (
     <div className="flex flex-col min-h-screen bg-background">
@@ -64,7 +76,7 @@ export default function HomePage() {
           <div className="flex flex-col sm:flex-row items-center gap-4">
             <DateSelector
               selectedDate={selectedDate}
-              onDateChange={setSelectedDate}
+              onDateChange={onDateChangeAndFetch} // Changed to custom handler
               className="w-full sm:w-auto"
             />
             <Button onClick={() => handleFetchNews(selectedDate)} disabled={isLoading || !selectedDate} className="w-full sm:w-auto">
