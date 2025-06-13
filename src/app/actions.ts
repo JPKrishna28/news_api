@@ -1,49 +1,101 @@
-
-'use server';
-
 import type { RawNewsArticle, ProcessedNewsArticle, NewsDigestData, UICommonHeadline, CommonNewsSubArticle, CategorizedNewsGroup } from '@/types';
 import { policeRelevanceFiltering } from '@/ai/flows/police-relevance-filtering';
 import { summarizeArticle } from '@/ai/flows/article-summarization';
 import { detectCommonNews, type DetectCommonNewsInput } from '@/ai/flows/common-news-detection';
 import { format } from 'date-fns';
-import NewsAPI from 'newsapi';
-import type { Article as NewsApiArticle } from 'newsapi';
+import https from 'https';
 
+// Define the NewsAPI response type
+interface NewsAPIResponse {
+  status: string;
+  totalResults: number;
+  articles: NewsAPIArticle[];
+  code?: string;
+  message?: string;
+}
+
+interface NewsAPIArticle {
+  source: {
+    id: string | null;
+    name: string;
+  };
+  author: string | null;
+  title: string;
+  description: string | null;
+  url: string;
+  urlToImage: string | null;
+  publishedAt: string;
+  content: string | null;
+}
+
+function httpsGet(url: string): Promise<any> {
+  return new Promise((resolve, reject) => {
+    const req = https.get(url, (res) => {
+      let data = '';
+      
+      res.on('data', (chunk) => {
+        data += chunk;
+      });
+      
+      res.on('end', () => {
+        try {
+          const jsonData = JSON.parse(data);
+          resolve(jsonData);
+        } catch (error) {
+          reject(new Error(`Failed to parse JSON: ${error}`));
+        }
+      });
+    });
+    
+    req.on('error', (error) => {
+      reject(error);
+    });
+    
+    req.setTimeout(10000, () => {
+      req.destroy();
+      reject(new Error('Request timeout'));
+    });
+  });
+}
 
 async function fetchNewsFromAPI(date: Date): Promise<RawNewsArticle[]> {
-  const apiKey = process.env.NEWS_API_KEY;
+  const apiKey = process.env.NEWS_API_KEY || 'e04b6662078b49348733d1a0b0ecd04b';
   if (!apiKey) {
     console.error("NEWS_API_KEY is not set in environment variables. Please ensure it's set in your .env file.");
     return [];
   }
 
-  const newsapi = new NewsAPI(apiKey);
   const formattedDate = format(date, 'yyyy-MM-dd');
   console.log(`Fetching news from NewsAPI for date: ${formattedDate} with query 'Andhra Pradesh'`);
 
-  try {
-    const response = await newsapi.v2.everything({
-      q: 'Andhra Pradesh',
-      language: 'en',
-      from: formattedDate,
-      to: formattedDate,
-      sortBy: 'popularity',
-      pageSize: 100, 
-    });
+  // Construct the API URL
+  const baseUrl = 'https://newsapi.org/v2/everything';
+  const params = new URLSearchParams({
+    q: 'Andhra Pradesh',
+    language: 'en',
+    from: formattedDate,
+    to: formattedDate,
+    sortBy: 'popularity',
+    pageSize: '100',
+    apiKey: apiKey
+  });
 
-    if (response.status !== 'ok') {
-      console.error(`NewsAPI response error for ${formattedDate}: Code: ${response.code}, Message: ${response.message}`);
+  try {
+    const data: NewsAPIResponse = await httpsGet(`${baseUrl}?${params.toString()}`);
+
+    if (data.status !== 'ok') {
+      console.error(`NewsAPI response error for ${formattedDate}: Code: ${data.code}, Message: ${data.message}`);
       return [];
     }
     
-    if (!response.articles || response.articles.length === 0) {
-        console.log(`NewsAPI returned no articles for ${formattedDate}. Query: 'Andhra Pradesh', sortBy: 'popularity'. This could be due to the date being too old (free tier limits to ~1 month) or no matching news.`);
-        return [];
+    if (!data.articles || data.articles.length === 0) {
+      console.log(`NewsAPI returned no articles for ${formattedDate}. Query: 'Andhra Pradesh', sortBy: 'popularity'. This could be due to the date being too old (free tier limits to ~1 month) or no matching news.`);
+      return [];
     }
 
-    console.log(`NewsAPI returned ${response.articles.length} articles for ${formattedDate} before client-side filtering.`);
+    console.log(`NewsAPI returned ${data.articles.length} articles for ${formattedDate} before client-side filtering.`);
 
-    const mappedArticles = response.articles.map((article: NewsApiArticle, index: number): RawNewsArticle => {
+    const mappedArticles = data.articles.map((article: NewsAPIArticle, index: number): RawNewsArticle => {
       let content = article.content || article.description || '';
       // Handle "[Removed]" content, fallback to description if content is "[Removed]"
       if (content === '[Removed]') {
@@ -76,9 +128,9 @@ async function fetchNewsFromAPI(date: Date): Promise<RawNewsArticle[]> {
     console.error(`Failed to fetch or process news from NewsAPI for ${formattedDate}:`, error.message || error);
     // Log more detailed error information if available
     if (error.message) {
-        console.error('Error details:', error.message, error);
+      console.error('Error details:', error.message, error);
     } else {
-        console.error('Unknown error fetching news from NewsAPI:', error);
+      console.error('Unknown error fetching news from NewsAPI:', error);
     }
     return [];
   }
@@ -89,11 +141,11 @@ export async function fetchAndProcessNews(date: Date): Promise<NewsDigestData> {
     const rawArticles: RawNewsArticle[] = await fetchNewsFromAPI(date);
 
     if (rawArticles.length === 0) {
-        console.log(`fetchAndProcessNews: No raw articles to process for date ${format(date, 'yyyy-MM-dd')}. This usually means NewsAPI returned no suitable articles or all were filtered out.`);
-         return {
-          commonHeadlines: [],
-          categorizedNews: [],
-        };
+      console.log(`fetchAndProcessNews: No raw articles to process for date ${format(date, 'yyyy-MM-dd')}. This usually means NewsAPI returned no suitable articles or all were filtered out.`);
+      return {
+        commonHeadlines: [],
+        categorizedNews: [],
+      };
     }
 
     console.log(`fetchAndProcessNews: Starting AI processing for ${rawArticles.length} articles for date ${format(date, 'yyyy-MM-dd')}.`);
@@ -102,8 +154,8 @@ export async function fetchAndProcessNews(date: Date): Promise<NewsDigestData> {
       try {
         // Content length check before calling AI, to save resources if content is too short
         if (!article.content || article.content.length < 50) { 
-           console.log(`Article "${article.title}" (ID: ${article.id}) skipped for AI processing due to short content (length: ${article.content?.length || 0}).`);
-           return {
+          console.log(`Article "${article.title}" (ID: ${article.id}) skipped for AI processing due to short content (length: ${article.content?.length || 0}).`);
+          return {
             ...article,
             isRelevant: false,
             relevanceReason: "Content too short for AI analysis",
@@ -122,8 +174,7 @@ export async function fetchAndProcessNews(date: Date): Promise<NewsDigestData> {
           relevanceReason: relevanceResult.isRelevant ? relevanceResult.reason : undefined,
           summary: summaryResult?.summary,
         } as ProcessedNewsArticle;
-      } catch (error)
-       {
+      } catch (error) {
         console.error(`Error during AI processing for article ${article.id} ("${article.title}"):`, error);
         return {
           ...article,
@@ -150,19 +201,18 @@ export async function fetchAndProcessNews(date: Date): Promise<NewsDigestData> {
 
     let commonNewsOutput = [];
     if (commonNewsInput.length > 0) {
-        console.log(`fetchAndProcessNews: Detecting common news from ${commonNewsInput.length} articles.`);
-        try {
-            commonNewsOutput = await detectCommonNews(commonNewsInput);
-            console.log(`fetchAndProcessNews: Detected ${commonNewsOutput.length} common headline groups.`);
-        } catch (error) {
-            console.error('Error detecting common news:', error);
-            commonNewsOutput = []; // Default to empty array on error
-        }
+      console.log(`fetchAndProcessNews: Detecting common news from ${commonNewsInput.length} articles.`);
+      try {
+        commonNewsOutput = await detectCommonNews(commonNewsInput);
+        console.log(`fetchAndProcessNews: Detected ${commonNewsOutput.length} common headline groups.`);
+      } catch (error) {
+        console.error('Error detecting common news:', error);
+        commonNewsOutput = []; // Default to empty array on error
+      }
     } else {
-        console.log("fetchAndProcessNews: No articles with sufficient content for common news detection.");
+      console.log("fetchAndProcessNews: No articles with sufficient content for common news detection.");
     }
     
-
     // Map AI output to UI structure
     const uiCommonHeadlines: UICommonHeadline[] = commonNewsOutput.map(group => {
       // Ensure that the articles in the group are mapped correctly to include their URL
